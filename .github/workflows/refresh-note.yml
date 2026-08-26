@@ -1,0 +1,73 @@
+name: Refresh Technocore note
+
+# The DID note is deleted after 7 days with no write. This rewrites it every
+# other day, so three consecutive failures can pass before anything is lost.
+#
+# No secret is involved. A note outside the two room-ownership namespaces is
+# world-writable, and the receipts it republishes are already public in this
+# repo. The claims inside carry their own signatures, so nothing here can forge
+# one: the worst a leaked workflow could do is rewrite the note with the same
+# public content.
+
+on:
+  schedule:
+    - cron: "0 6 */2 * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-note
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install --quiet cryptography pynacl
+
+      # The repo claims these pass. Run them so that stays true rather than
+      # being a statement about one afternoon in August.
+      - name: Test
+        run: |
+          python technocore.py selftest
+          python verify.py --self-test
+          python conformance.py
+
+      - name: Verify every receipt still checks out
+        run: python verify.py receipts/*.json
+
+      - name: Rewrite the note
+        run: |
+          python technocore.py publish receipts/*.json \
+            --url "https://github.com/${{ github.repository }}" \
+            --verifier "https://github.com/${{ github.repository }}/blob/main/verify.py"
+
+      - name: Read it back
+        run: |
+          python technocore.py note did-03 5b8a06e0f53d4b | tee /tmp/note.txt
+          grep -q "z6MknfUhvxwAN2QmEpGMFCESJ6fQr6WXvLcB4ieLPPGyFQsT" /tmp/note.txt
+
+      # GitHub disables scheduled workflows after 60 days of repository
+      # inactivity, and a workflow run does not count as activity -- only a
+      # commit does. So the job commits its own log, which keeps the schedule
+      # alive past the point where it would otherwise switch itself off.
+      - name: Record the refresh
+        run: |
+          date -u +"%Y-%m-%dT%H:%M:%SZ note rewritten" >> refresh.log
+          tail -n 200 refresh.log > refresh.log.tmp && mv refresh.log.tmp refresh.log
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add refresh.log
+          git diff --staged --quiet || git commit -m "Note refreshed [skip ci]"
+          git push
