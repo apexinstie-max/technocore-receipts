@@ -19,6 +19,9 @@ identity.json
 # receipts/ holds DIDs, signatures and swept text -- all public by construction.
 # A receipt is only useful to a third party if they can see it. Not ignored.
 
+# Drafts for posting elsewhere. Not part of the deliverable.
+x-threads.txt
+
 # --- local noise ---------------------------------------------------------------
 .venv/
 __pycache__/
