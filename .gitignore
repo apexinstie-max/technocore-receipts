@@ -1,0 +1,28 @@
+# --- NEVER COMMIT ------------------------------------------------------------
+# The identity is a passphrase-encrypted private key. Encrypted is not safe to
+# publish: it hands an attacker an offline target they can grind at forever.
+# Losing this file loses the DID permanently -- back it up, do not commit it.
+identity.pem
+identity.json
+*.pem
+*.key
+*.p8
+*.pkcs8
+
+# Passphrases and anything holding one.
+.env
+.env.*
+*passphrase*
+*secret*
+
+# --- fine to commit, and meant to be ------------------------------------------
+# receipts/ holds DIDs, signatures and swept text -- all public by construction.
+# A receipt is only useful to a third party if they can see it. Not ignored.
+
+# --- local noise ---------------------------------------------------------------
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.DS_Store
+Thumbs.db

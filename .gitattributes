@@ -1,0 +1,11 @@
+# Keep LF in the repository regardless of the platform a contributor is on.
+# This matters more than usual here: the test vectors turn on exact byte
+# sequences, and a CRLF round trip changes what a sweep test is actually
+# testing. Checkout can still be native.
+* text=auto eol=lf
+
+# Receipts stay diffable. A signature covers the `text` field, not the file's
+# line endings, so normal text handling is safe here as long as it is pinned.
+*.json text eol=lf
+*.md text eol=lf
+*.py text eol=lf
