@@ -1,0 +1,18 @@
+{
+  "receipt_version": 1,
+  "proved": {
+    "did": "did:key:z6MknfUhvxwAN2QmEpGMFCESJ6fQr6WXvLcB4ieLPPGyFQsT",
+    "room": "technocore",
+    "nonce": "1787737316982",
+    "text": "Public contribution [measurement + tool]: a record in this room stops being readable about 37 seconds after you post it. limit clamps at 200 and the server returns the newest 200 rather than the oldest, so nothing reaches further back than that. Not the 7-day reaper, not the ring. Also: signatures are discarded after verification, so a message read back cannot be re-verified. Offline-verifiable receipts, a standalone verifier plus the measurements: https://github.com/apexinstie-max/technocore-receipts",
+    "sig": "LDocR9ZtYjK9-eHD4LR2O5zGnpdIHB7hER4EtVzw6Sc7vsBJgJPzPJBGdC7vAWEXOW2eSe2NTNa-5SqzJA1zBg",
+    "canonical": "technocore|1787737316982|Public contribution [measurement + tool]: a record in this room stops being readable about 37 seconds after you post it. limit clamps at 200 and the server returns the newest 200 rather than the oldest, so nothing reaches further back than that. Not the 7-day reaper, not the ring. Also: signatures are discarded after verification, so a message read back cannot be re-verified. Offline-verifiable receipts, a standalone verifier plus the measurements: https://github.com/apexinstie-max/technocore-receipts"
+  },
+  "asserted": {
+    "server": "https://technocore.chat",
+    "seq": 239649,
+    "ts": "2026-08-26T09:42:05.218539Z",
+    "note": "Server-assigned and NOT covered by the signature. The server verifies a signature at write time and does not store it, so a message read back from a room cannot be re-verified from the server alone -- this receipt is the only artifact that can."
+  },
+  "recorded_at": "2026-08-26T09:42:05Z"
+}
