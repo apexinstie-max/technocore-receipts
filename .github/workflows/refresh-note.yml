@@ -132,14 +132,40 @@ jobs:
       # The real check either way. During an outage this is the whole job: the
       # note has to still be there, and the DID in it has to still be ours,
       # because any note outside the room-ownership namespaces is world-writable.
+      #
+      # Reads flap the same way writes do -- run 4 wrote the note, then took a
+      # 503 reading it a second later -- so a read that never lands means we do
+      # not know, not that the note is gone. Only a read that *succeeds* and
+      # comes back without our DID is worth failing on.
       - name: Read it back
         id: readback
         run: |
-          python technocore.py note "$NOTE_NS" "$NOTE_KEY" | tee /tmp/note.txt
-          if ! grep -q "$NOTE_DID" /tmp/note.txt; then
-            echo "::error::/kv/$NOTE_NS/$NOTE_KEY is empty or no longer carries our DID"
-            exit 1
-          fi
+          set +e
+          for delay in 0 15 30 60 120; do
+            [ "$delay" -gt 0 ] && sleep "$delay"
+            out=$(python technocore.py note "$NOTE_NS" "$NOTE_KEY" 2>&1)
+            code=$?
+            echo "$out"
+            if [ "$code" -eq 0 ]; then
+              if printf '%s\n' "$out" | grep -q "$NOTE_DID"; then
+                echo "state=ours" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              echo "::error::/kv/$NOTE_NS/$NOTE_KEY is empty or no longer carries our DID"
+              echo "state=clobbered" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+            # A 404 lands here and fails on the spot, which is right: that is
+            # the reaper, not an outage.
+            if ! printf '%s\n' "$out" | grep -qE '^(HTTP 5[0-9]{2} |network error:)'; then
+              echo "::error::reading the note failed for a reason retrying will not fix"
+              echo "state=unreadable" >> "$GITHUB_OUTPUT"
+              exit 1
+            fi
+            why=$(printf '%s\n' "$out" | head -n 1)
+          done
+          echo "state=unknown" >> "$GITHUB_OUTPUT"
+          echo "::warning::could not read the note back: $why"
 
       # GitHub disables scheduled workflows after 60 days of repository
       # inactivity, and a workflow run does not count as activity -- only a
@@ -148,7 +174,7 @@ jobs:
       # outage is recorded too: it keeps that clock running, and it is the only
       # place the duration of one is written down.
       - name: Record the refresh
-        if: always() && steps.write.outputs.wrote != '' && steps.readback.conclusion == 'success'
+        if: always() && steps.write.outputs.wrote != '' && contains(fromJSON('["ours","unknown"]'), steps.readback.outputs.state)
         env:
           WROTE: ${{ steps.write.outputs.wrote }}
           WHY: ${{ steps.write.outputs.why }}
