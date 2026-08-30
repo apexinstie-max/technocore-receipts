@@ -1,7 +1,20 @@
 name: Refresh Technocore note
 
-# The DID note is deleted after 7 days with no write. This rewrites it every
-# other day, so three consecutive failures can pass before anything is lost.
+# The DID note is deleted after 7 days with no write, so this rewrites it.
+#
+# The run succeeds when the note is *present and ours*, which is the thing that
+# actually matters, rather than when the write returns 200. Those come apart
+# whenever technocore.chat sheds writes: on 2026-08-29 every /kv/ write returned
+# 503 for at least a day while reads stayed fine, and a job that fails on that
+# teaches you to ignore its mail. A 5xx is retried, then recorded and warned
+# about, and only becomes a failure once the reaper is within 24 hours of the
+# note. Anything the server blames on us -- a 4xx, a receipt that stopped
+# verifying, a note over the size cap -- fails on the spot.
+#
+# The schedule is every 6 hours, but a run that finds a write less than 40 hours
+# old stops before doing anything. So the note is still rewritten about every
+# other day when all is well, and an outage gets four attempts a day instead of
+# one every two days. Nothing to revert when the server comes back.
 #
 # No secret is involved. A note outside the two room-ownership namespaces is
 # world-writable, and the receipts it republishes are already public in this
@@ -11,7 +24,7 @@ name: Refresh Technocore note
 
 on:
   schedule:
-    - cron: "0 6 */2 * *"
+    - cron: "0 */6 * * *"
   workflow_dispatch:
   push:
     branches: [main]
@@ -23,8 +36,48 @@ concurrency:
   group: refresh-note
   cancel-in-progress: false
 
+env:
+  NOTE_NS: did-03
+  NOTE_KEY: 5b8a06e0f53d4b
+  NOTE_DID: z6MknfUhvxwAN2QmEpGMFCESJ6fQr6WXvLcB4ieLPPGyFQsT
+  REAP_HOURS: 168 # 7 days with no write and the note is gone
+  REWRITE_AFTER: 40 # leaves three whole failed days before that matters
+  ESCALATE_AFTER: 144 # 24 hours of margin left: start failing loudly
+
 jobs:
+  # Split out so the throttle is visible in the run list: a skipped refresh job
+  # reads as "not due yet", not as a job that quietly did nothing.
+  due:
+    runs-on: ubuntu-latest
+    outputs:
+      due: ${{ steps.check.outputs.due }}
+      hours: ${{ steps.check.outputs.hours }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: How long since a write landed
+        id: check
+        run: |
+          last=$(grep ' note rewritten$' refresh.log 2>/dev/null | tail -n 1 | cut -d' ' -f1)
+          if [ -z "$last" ]; then
+            hours=$REAP_HOURS
+          else
+            hours=$(( ( $(date -u +%s) - $(date -u -d "$last" +%s) ) / 3600 ))
+          fi
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            due=true
+          elif [ "$hours" -ge "$REWRITE_AFTER" ]; then
+            due=true
+          else
+            due=false
+          fi
+          echo "hours=$hours" >> "$GITHUB_OUTPUT"
+          echo "due=$due" >> "$GITHUB_OUTPUT"
+          echo "last write ${hours}h ago, due=$due" >> "$GITHUB_STEP_SUMMARY"
+
   refresh:
+    needs: due
+    if: needs.due.outputs.due == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,26 +101,79 @@ jobs:
         run: python verify.py receipts/*.json
 
       - name: Rewrite the note
+        id: write
         run: |
-          python technocore.py publish receipts/*.json \
-            --url "https://github.com/${{ github.repository }}" \
-            --verifier "https://github.com/${{ github.repository }}/blob/main/verify.py"
+          set +e
+          for delay in 0 15 30 60 120; do
+            [ "$delay" -gt 0 ] && sleep "$delay"
+            out=$(python technocore.py publish receipts/*.json \
+              --url "https://github.com/${{ github.repository }}" \
+              --verifier "https://github.com/${{ github.repository }}/blob/main/verify.py" 2>&1)
+            code=$?
+            echo "$out"
+            if [ "$code" -eq 0 ]; then
+              echo "wrote=yes" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            # A 5xx or a dropped connection is the server's end. Everything else
+            # the tool refuses -- a 403 on a bad signature, a receipt that no
+            # longer verifies, the 8192-char note cap -- is ours, and retrying
+            # it only buries it.
+            if ! printf '%s\n' "$out" | grep -qE '^(HTTP 5[0-9]{2} |network error:)'; then
+              echo "::error::publish failed for a reason retrying will not fix"
+              exit 1
+            fi
+            why=$(printf '%s\n' "$out" | head -n 1)
+          done
+          echo "wrote=no" >> "$GITHUB_OUTPUT"
+          echo "why=$why" >> "$GITHUB_OUTPUT"
+          echo "::warning::every write attempt was refused: $why"
 
+      # The real check either way. During an outage this is the whole job: the
+      # note has to still be there, and the DID in it has to still be ours,
+      # because any note outside the room-ownership namespaces is world-writable.
       - name: Read it back
+        id: readback
         run: |
-          python technocore.py note did-03 5b8a06e0f53d4b | tee /tmp/note.txt
-          grep -q "z6MknfUhvxwAN2QmEpGMFCESJ6fQr6WXvLcB4ieLPPGyFQsT" /tmp/note.txt
+          python technocore.py note "$NOTE_NS" "$NOTE_KEY" | tee /tmp/note.txt
+          if ! grep -q "$NOTE_DID" /tmp/note.txt; then
+            echo "::error::/kv/$NOTE_NS/$NOTE_KEY is empty or no longer carries our DID"
+            exit 1
+          fi
 
       # GitHub disables scheduled workflows after 60 days of repository
       # inactivity, and a workflow run does not count as activity -- only a
       # commit does. So the job commits its own log, which keeps the schedule
-      # alive past the point where it would otherwise switch itself off.
+      # alive past the point where it would otherwise switch itself off. An
+      # outage is recorded too: it keeps that clock running, and it is the only
+      # place the duration of one is written down.
       - name: Record the refresh
+        if: always() && steps.write.outputs.wrote != '' && steps.readback.conclusion == 'success'
+        env:
+          WROTE: ${{ steps.write.outputs.wrote }}
+          WHY: ${{ steps.write.outputs.why }}
         run: |
-          date -u +"%Y-%m-%dT%H:%M:%SZ note rewritten" >> refresh.log
+          if [ "$WROTE" = yes ]; then
+            line="note rewritten"
+          else
+            line="server unavailable, note not rewritten -- $WHY"
+          fi
+          date -u +"%Y-%m-%dT%H:%M:%SZ $line" >> refresh.log
           tail -n 200 refresh.log > refresh.log.tmp && mv refresh.log.tmp refresh.log
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add refresh.log
           git diff --staged --quiet || git commit -m "Note refreshed [skip ci]"
           git push
+
+      - name: Fail once the reaper is close
+        if: success() && steps.write.outputs.wrote == 'no'
+        env:
+          HOURS: ${{ needs.due.outputs.hours }}
+        run: |
+          echo "last write landed ${HOURS}h ago; the note is reaped at ${REAP_HOURS}h"
+          if [ "$HOURS" -ge "$ESCALATE_AFTER" ]; then
+            echo "::error::nothing has been written in ${HOURS}h -- under 24h before /kv/$NOTE_NS/$NOTE_KEY is reaped"
+            exit 1
+          fi
+          echo "::warning::note not rewritten, but it is still readable with $(( REAP_HOURS - HOURS ))h left on it"
